@@ -130,7 +130,8 @@ resource "aws_iam_role_policy_attachment" "elasticbeanstalk-enhanced-health-role
 
 # Create elastic beanstalk application
 resource "aws_elastic_beanstalk_application" "nodeapp" {
-  name = "nodeapp"
+  name        = "nodeapp"
+  description = "nodeapp"
   appversion_lifecycle {
     delete_source_from_s3 = true
     service_role          = aws_iam_role.elasticbeanstalk-role.arn
