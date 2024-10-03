@@ -1,3 +1,13 @@
+resource "aws_s3_bucket" "theplayer007_nodeapp" {
+  bucket = "theplayer007-nodeapp"
+}
+
+resource "aws_s3_object" "nodeapp-object" {
+  bucket = aws_s3_bucket.theplayer007_nodeapp.id
+  key    = "nodeapp.zip"
+  source = "./files/nodeapp.zip"
+}
+
 # VPC Creation
 resource "aws_vpc" "vpc" {
   cidr_block = "10.0.0.0/16"
@@ -50,54 +60,7 @@ resource "aws_route_table_association" "route_table_association" {
   route_table_id = aws_route_table.route_table.id
 }
 
-resource "aws_security_group" "eb-sg" {
-  name   = "asg"
-  vpc_id = aws_vpc.vpc.id
-
-  ingress {
-    from_port = 80
-    to_port   = 80
-    protocol  = "tcp"
-    security_groups = [
-      aws_security_group.lb.id
-    ]
-  }
-
-  ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-}
-
-resource "aws_security_group" "lb" {
-  name   = "lb"
-  vpc_id = aws_vpc.vpc.id
-
-  ingress {
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-}
-
-# App Runner role to manage ECR
+# Elastic Beanstalk Role
 resource "aws_iam_role" "elasticbeanstalk-role" {
   name               = "elasticbeanstalk-role"
   assume_role_policy = <<EOF
@@ -116,17 +79,17 @@ resource "aws_iam_role" "elasticbeanstalk-role" {
     EOF
 }
 
-# AppRunnerECRAccess policy attachment 
-resource "aws_iam_role_policy_attachment" "elasticbeanstalk-managed-updates-role-policy-attachment" {
-  role       = aws_iam_role.elasticbeanstalk-role.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSElasticBeanstalkManagedUpdatesCustomerRolePolicy"
-}
+# # AppRunnerECRAccess policy attachment 
+# resource "aws_iam_role_policy_attachment" "elasticbeanstalk-managed-updates-role-policy-attachment" {
+#   role       = aws_iam_role.elasticbeanstalk-role.name
+#   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSElasticBeanstalkManagedUpdatesCustomerRolePolicy"
+# }
 
-# AppRunnerECRAccess policy attachment 
-resource "aws_iam_role_policy_attachment" "elasticbeanstalk-enhanced-health-role-policy-attachment" {
-  role       = aws_iam_role.elasticbeanstalk-role.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSElasticBeanstalkEnhancedHealth"
-}
+# # AppRunnerECRAccess policy attachment 
+# resource "aws_iam_role_policy_attachment" "elasticbeanstalk-enhanced-health-role-policy-attachment" {
+#   role       = aws_iam_role.elasticbeanstalk-role.name
+#   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSElasticBeanstalkEnhancedHealth"
+# }
 
 # Create elastic beanstalk application
 resource "aws_elastic_beanstalk_application" "nodeapp" {
@@ -142,62 +105,81 @@ resource "aws_elastic_beanstalk_application" "nodeapp" {
 resource "aws_elastic_beanstalk_environment" "beanstalkappenv" {
   name                = "nodeapp-env"
   application         = aws_elastic_beanstalk_application.nodeapp.name
-  solution_stack_name = "64bit Amazon Linux 2 v5.6.0 running Node.js 20"
+  solution_stack_name = "64bit Amazon Linux 2023 v6.2.1 running Node.js 20"
   tier                = "WebServer"
+  
+  setting {
+    namespace = "aws:elasticbeanstalk:application"
+    name      = "Application Healthcheck URL"
+    value     = "/"
+  }
+
   setting {
     namespace = "aws:ec2:vpc"
     name      = "VPCId"
     value     = aws_vpc.vpc.id
   }
+
   setting {
     namespace = "aws:autoscaling:launchconfiguration"
     name      = "IamInstanceProfile"
-    value     = "aws-elasticbeanstalk-ec2-role"
+    value     = aws_iam_role.elasticbeanstalk-role.arn
   }
+
   setting {
     namespace = "aws:ec2:vpc"
     name      = "AssociatePublicIpAddress"
-    value     = "True"
+    value     = true
   }
 
   setting {
     namespace = "aws:ec2:vpc"
     name      = "Subnets"
-    value     = join(",", "${aws_subnet.public_subnets[*]}")
+    value     = aws_subnet.public_subnets[0].id
   }
+
   setting {
-    namespace = "aws:elasticbeanstalk:environment:process:default"
-    name      = "MatcherHTTPCode"
-    value     = "200"
+    namespace = "aws:ec2:vpc"
+    name      = "ELBScheme"
+    value     = "public"
   }
+
   setting {
     namespace = "aws:elasticbeanstalk:environment"
     name      = "LoadBalancerType"
     value     = "application"
   }
+
   setting {
-    namespace = "aws:autoscaling:launchconfiguration"
-    name      = "InstanceType"
-    value     = "t2.micro"
+    namespace = "aws:ec2:instances"
+    name      = "InstanceTypes"
+    value     = jsonencode(["t2.micro","t3.micro"])
   }
+
   setting {
-    namespace = "aws:ec2:vpc"
-    name      = "ELBScheme"
-    value     = "internet facing"
+    namespace = "aws:ec2:instances"
+    name      = "EnableSpot"
+    value     = false
   }
+  
   setting {
     namespace = "aws:autoscaling:asg"
     name      = "MinSize"
     value     = 1
   }
+  
   setting {
     namespace = "aws:autoscaling:asg"
     name      = "MaxSize"
     value     = 2
   }
-  setting {
-    namespace = "aws:elasticbeanstalk:healthreporting:system"
-    name      = "SystemType"
-    value     = "enhanced"
-  }
+}
+
+resource "aws_elastic_beanstalk_application_version" "nodeapp_version" {
+  name        = "nodeapp_version"
+  application = aws_elastic_beanstalk_application.nodeapp.name
+  description = "Node.js based application deployed on Elastic Beanstalk"
+  bucket      = aws_s3_bucket.theplayer007_nodeapp.id
+  key         = aws_s3_object.nodeapp-object.id
+  depends_on = [ aws_s3_bucket.theplayer007_nodeapp ]
 }

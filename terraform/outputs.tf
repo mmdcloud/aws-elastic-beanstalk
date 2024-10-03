@@ -1,3 +1,3 @@
-output "lb_url" {
-  value = aws_lb.lb.dns_name
+output "endpoint_url" {
+  value = aws_elastic_beanstalk_environment.beanstalkappenv.endpoint_url
 }
