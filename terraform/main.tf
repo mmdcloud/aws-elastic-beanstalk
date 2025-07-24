@@ -107,7 +107,7 @@
 #   application         = aws_elastic_beanstalk_application.nodeapp.name
 #   solution_stack_name = "64bit Amazon Linux 2023 v6.2.1 running Node.js 20"
 #   tier                = "WebServer"
-  
+
 #   setting {
 #     namespace = "aws:elasticbeanstalk:application"
 #     name      = "Application Healthcheck URL"
@@ -161,13 +161,13 @@
 #     name      = "EnableSpot"
 #     value     = false
 #   }
-  
+
 #   setting {
 #     namespace = "aws:autoscaling:asg"
 #     name      = "MinSize"
 #     value     = 1
 #   }
-  
+
 #   setting {
 #     namespace = "aws:autoscaling:asg"
 #     name      = "MaxSize"
@@ -185,260 +185,326 @@
 # }
 
 # VPC Configuration
-resource "aws_vpc" "prod_vpc" {
-  cidr_block           = "10.0.0.0/16"
-  enable_dns_support   = true
-  enable_dns_hostnames = true
-  tags = {
-    Name = "prod-vpc"
-  }
+module "vpc" {
+  source                = "./modules/vpc/vpc"
+  vpc_name              = "vpc"
+  vpc_cidr_block        = "10.0.0.0/16"
+  enable_dns_hostnames  = true
+  enable_dns_support    = true
+  internet_gateway_name = "vpc_igw"
 }
 
-# Subnets
-resource "aws_subnet" "public_subnets" {
-  count             = length(var.public_subnet_cidrs)
-  vpc_id            = aws_vpc.prod_vpc.id
-  cidr_block        = var.public_subnet_cidrs[count.index]
-  availability_zone = var.availability_zones[count.index]
-  tags = {
-    Name = "public-subnet-${count.index + 1}"
-  }
+# Public Subnets
+module "public_subnets" {
+  source = "./modules/vpc/subnets"
+  name   = "public subnet"
+  subnets = [
+    {
+      subnet = "10.0.1.0/24"
+      az     = "${var.aws_region}a"
+    },
+    {
+      subnet = "10.0.2.0/24"
+      az     = "${var.aws_region}b"
+    },
+    {
+      subnet = "10.0.3.0/24"
+      az     = "${var.aws_region}c"
+    }
+  ]
+  vpc_id                  = module.vpc.vpc_id
+  map_public_ip_on_launch = true
 }
 
-resource "aws_subnet" "private_subnets" {
-  count             = length(var.private_subnet_cidrs)
-  vpc_id            = aws_vpc.prod_vpc.id
-  cidr_block        = var.private_subnet_cidrs[count.index]
-  availability_zone = var.availability_zones[count.index]
-  tags = {
-    Name = "private-subnet-${count.index + 1}"
-  }
+# Private Subnets
+module "private_subnets" {
+  source = "./modules/vpc/subnets"
+  name   = "private subnet"
+  subnets = [
+    {
+      subnet = "10.0.6.0/24"
+      az     = "${var.aws_region}a"
+    },
+    {
+      subnet = "10.0.5.0/24"
+      az     = "${var.aws_region}b"
+    },
+    {
+      subnet = "10.0.4.0/24"
+      az     = "${var.aws_region}c"
+    }
+  ]
+  vpc_id                  = module.vpc.vpc_id
+  map_public_ip_on_launch = false
 }
 
-# Internet Gateway
-resource "aws_internet_gateway" "igw" {
-  vpc_id = aws_vpc.prod_vpc.id
-  tags = {
-    Name = "prod-igw"
-  }
+# Public Route Table
+module "public_rt" {
+  source  = "./modules/vpc/route_tables"
+  name    = "public route table"
+  subnets = module.public_subnets.subnets[*]
+  routes = [
+    {
+      cidr_block     = "0.0.0.0/0"
+      gateway_id     = module.vpc.igw_id
+      nat_gateway_id = ""
+    }
+  ]
+  vpc_id = module.vpc.vpc_id
 }
 
-# Route Tables
-resource "aws_route_table" "public_rt" {
-  vpc_id = aws_vpc.prod_vpc.id
-
-  route {
-    cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.igw.id
-  }
-
-  tags = {
-    Name = "public-rt"
-  }
+# Public Route Table
+module "private_rt" {
+  source  = "./modules/vpc/route_tables"
+  name    = "private route table"
+  subnets = module.private_subnets.subnets[*]
+  routes  = []
+  vpc_id  = module.vpc.vpc_id
 }
 
-resource "aws_route_table_association" "public_rta" {
-  count          = length(var.public_subnet_cidrs)
-  subnet_id      = aws_subnet.public_subnets[count.index].id
-  route_table_id = aws_route_table.public_rt.id
+# RDS Security Group
+module "rds_sg" {
+  source = "./modules/vpc/security_groups"
+  vpc_id = module.vpc.vpc_id
+  name   = "rds_sg"
+  ingress = [
+    {
+      from_port       = 5432
+      to_port         = 5432
+      protocol        = "tcp"
+      self            = "false"
+      cidr_blocks     = []
+      security_groups = [module.eb_sg.id]
+      description     = "any"
+    }
+  ]
+  egress = [
+    {
+      from_port   = 0
+      to_port     = 0
+      protocol    = "-1"
+      cidr_blocks = ["0.0.0.0/0"]
+    }
+  ]
 }
 
-# Security Group for Elastic Beanstalk
-resource "aws_security_group" "eb_sg" {
-  name        = "eb-production-sg"
-  description = "Security group for Elastic Beanstalk environment"
-  vpc_id      = aws_vpc.prod_vpc.id
-
-  ingress {
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = {
-    Name = "eb-production-sg"
-  }
+# Elastic beanstalk Security Group
+module "eb_sg" {
+  source = "./modules/vpc/security_groups"
+  vpc_id = module.vpc.vpc_id
+  name   = "eb_sg"
+  ingress = [
+    {
+      from_port       = 80
+      to_port         = 80
+      protocol        = "tcp"
+      self            = "false"
+      cidr_blocks     = []
+      security_groups = ["0.0.0.0/0"]
+      description     = "any"
+    },
+    {
+      from_port       = 443
+      to_port         = 443
+      protocol        = "tcp"
+      self            = "false"
+      cidr_blocks     = []
+      security_groups = ["0.0.0.0/0"]
+      description     = "any"
+    },
+    {
+      from_port       = 22
+      to_port         = 22
+      protocol        = "tcp"
+      self            = "false"
+      cidr_blocks     = []
+      security_groups = ["0.0.0.0/0"]
+      description     = "any"
+    }
+  ]
+  egress = [
+    {
+      from_port   = 0
+      to_port     = 0
+      protocol    = "-1"
+      cidr_blocks = ["0.0.0.0/0"]
+    }
+  ]
 }
 
-# RDS Database (PostgreSQL example)
-resource "aws_db_subnet_group" "rds_subnet_group" {
-  name       = "rds-subnet-group"
-  subnet_ids = aws_subnet.private_subnets[*].id
+## IAM Role for Enhanced Monitoring
+resource "aws_iam_role" "rds_monitoring_role" {
+  name = "rds-monitoring-role"
 
-  tags = {
-    Name = "rds-subnet-group"
-  }
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "monitoring.rds.amazonaws.com"
+        }
+      }
+    ]
+  })
 }
 
-resource "aws_security_group" "rds_sg" {
-  name        = "rds-production-sg"
-  description = "Security group for RDS database"
-  vpc_id      = aws_vpc.prod_vpc.id
-
-  ingress {
-    from_port       = 5432
-    to_port         = 5432
-    protocol        = "tcp"
-    security_groups = [aws_security_group.eb_sg.id]
-  }
-
-  tags = {
-    Name = "rds-production-sg"
-  }
+resource "aws_iam_role_policy_attachment" "rds_monitoring_policy" {
+  role       = aws_iam_role.rds_monitoring_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonRDSEnhancedMonitoringRole"
 }
 
-resource "aws_db_instance" "production_db" {
-  identifier             = "prod-db"
-  engine                 = "postgres"
-  engine_version         = var.db_engine_version
-  instance_class         = var.db_instance_class
-  allocated_storage      = var.db_allocated_storage
-  storage_type           = "gp2"
-  db_name                = var.db_name
-  username               = var.db_username
-  password               = var.db_password
-  parameter_group_name   = "default.postgres${replace(var.db_engine_version, "/\\.\\d+$/", "")}"
-  db_subnet_group_name   = aws_db_subnet_group.rds_subnet_group.name
-  vpc_security_group_ids = [aws_security_group.rds_sg.id]
-  skip_final_snapshot    = false
-  final_snapshot_identifier = "prod-db-final-snapshot"
-  backup_retention_period = 7
-  backup_window           = "03:00-06:00"
-  maintenance_window      = "sun:06:00-sun:08:00"
-  multi_az                = true
-  deletion_protection     = true
-
-  tags = {
-    Name = "production-db"
-  }
+module "db" {
+  source                          = "./modules/rds"
+  db_name                         = "db"
+  allocated_storage               = 100
+  storage_type                    = "gp3"
+  engine                          = "postgres"
+  engine_version                  = "13.4"
+  instance_class                  = "db.r6g.large"
+  multi_az                        = true
+  username                        = tostring(data.vault_generic_secret.rds.data["username"])
+  password                        = tostring(data.vault_generic_secret.rds.data["password"])
+  subnet_group_name               = "rds_subnet_group"
+  enabled_cloudwatch_logs_exports = ["audit", "error", "general", "slowquery"]
+  backup_retention_period         = 35
+  backup_window                   = "03:00-06:00"
+  subnet_group_ids = [
+    module.private_subnets.subnets[0].id,
+    module.private_subnets.subnets[1].id,
+    module.private_subnets.subnets[2].id
+  ]
+  vpc_security_group_ids                = [module.rds_sg.id]
+  publicly_accessible                   = false
+  deletion_protection                   = true
+  skip_final_snapshot                   = false
+  max_allocated_storage                 = 500
+  performance_insights_enabled          = true
+  performance_insights_retention_period = 7
+  monitoring_interval                   = 60
+  monitoring_role_arn                   = aws_iam_role.rds_monitoring_role.arn
+  parameter_group_name                  = "db-pg"
+  parameter_group_family                = "postgres13.4"
+  parameters = [
+    {
+      name  = "max_connections"
+      value = "1000"
+    },
+    {
+      name  = "innodb_buffer_pool_size"
+      value = "{DBInstanceClassMemory*3/4}"
+    },
+    {
+      name  = "slow_query_log"
+      value = "1"
+    }
+  ]
 }
 
-# Elastic Beanstalk Application
-resource "aws_elastic_beanstalk_application" "prod_app" {
-  name        = var.app_name
-  description = "Production application"
-}
+module "eb_app" {
+  source          = "./modules/elastic_beanstalk"
+  app_name        = var.app_name
+  app_description = "Production application for ${var.app_name}"
+  environments = [
+    {
+      name                = "${var.app_name}-prod"
+      solution_stack_name = "64bit Amazon Linux 2 v3.4.5 running Docker" # Update to your desired platform
+      settings = [
+        {
+          namespace = "aws:ec2:vpc"
+          name      = "VPCId"
+          value     = aws_vpc.prod_vpc.id
+        },
 
-# Elastic Beanstalk Environment
-resource "aws_elastic_beanstalk_environment" "prod_env" {
-  name                = "${var.app_name}-prod"
-  application         = aws_elastic_beanstalk_application.prod_app.name
-  solution_stack_name = "64bit Amazon Linux 2 v3.4.5 running Docker" # Update to your desired platform
+        {
+          namespace = "aws:ec2:vpc"
+          name      = "Subnets"
+          value     = join(",", aws_subnet.public_subnets[*].id)
+        },
+        {
+          namespace = "aws:ec2:vpc"
+          name      = "ELBSubnets"
+          value     = join(",", aws_subnet.public_subnets[*].id)
+        },
 
-  setting {
-    namespace = "aws:ec2:vpc"
-    name      = "VPCId"
-    value     = aws_vpc.prod_vpc.id
-  }
+        {
+          namespace = "aws:autoscaling:launchconfiguration"
+          name      = "IamInstanceProfile"
+          value     = "aws-elasticbeanstalk-ec2-role"
+        },
 
-  setting {
-    namespace = "aws:ec2:vpc"
-    name      = "Subnets"
-    value     = join(",", aws_subnet.public_subnets[*].id)
-  }
+        {
+          namespace = "aws:autoscaling:launchconfiguration"
+          name      = "InstanceType"
+          value     = var.instance_type
+        },
+        {
+          namespace = "aws:autoscaling:asg"
+          name      = "MinSize"
+          value     = var.min_instances
+        },
 
-  setting {
-    namespace = "aws:ec2:vpc"
-    name      = "ELBSubnets"
-    value     = join(",", aws_subnet.public_subnets[*].id)
-  }
+        {
+          namespace = "aws:autoscaling:asg"
+          name      = "MaxSize"
+          value     = var.max_instances
+        },
 
-  setting {
-    namespace = "aws:autoscaling:launchconfiguration"
-    name      = "IamInstanceProfile"
-    value     = "aws-elasticbeanstalk-ec2-role"
-  }
+        {
+          namespace = "aws:elasticbeanstalk:environment"
+          name      = "EnvironmentType"
+          value     = "LoadBalanced"
+        },
+        {
+          namespace = "aws:elasticbeanstalk:environment"
+          name      = "LoadBalancerType"
+          value     = "application"
+        },
 
-  setting {
-    namespace = "aws:autoscaling:launchconfiguration"
-    name      = "InstanceType"
-    value     = var.instance_type
-  }
+        {
+          namespace = "aws:elasticbeanstalk:healthreporting:system"
+          name      = "SystemType"
+          value     = "enhanced"
+        },
 
-  setting {
-    namespace = "aws:autoscaling:asg"
-    name      = "MinSize"
-    value     = var.min_instances
-  }
+        {
+          namespace = "aws:elasticbeanstalk:command"
+          name      = "DeploymentPolicy"
+          value     = "Rolling"
+        },
 
-  setting {
-    namespace = "aws:autoscaling:asg"
-    name      = "MaxSize"
-    value     = var.max_instances
-  }
+        {
+          namespace = "aws:elasticbeanstalk:command"
+          name      = "BatchSizeType"
+          value     = "Percentage"
+        },
 
-  setting {
-    namespace = "aws:elasticbeanstalk:environment"
-    name      = "EnvironmentType"
-    value     = "LoadBalanced"
-  }
+        {
+          namespace = "aws:elasticbeanstalk:command"
+          name      = "BatchSize"
+          value     = "50"
+        },
 
-  setting {
-    namespace = "aws:elasticbeanstalk:environment"
-    name      = "LoadBalancerType"
-    value     = "application"
-  }
+        {
+          namespace = "aws:elasticbeanstalk:command"
+          name      = "IgnoreHealthCheck"
+          value     = "false"
+        },
 
-  setting {
-    namespace = "aws:elasticbeanstalk:healthreporting:system"
-    name      = "SystemType"
-    value     = "enhanced"
-  }
+        # Environment variables (including DB connection)
+        {
+          namespace = "aws:elasticbeanstalk:application:environment"
+          name      = "DATABASE_URL"
+          value     = "postgresql://${var.db_username}:${var.db_password}@${aws_db_instance.production_db.endpoint}/${var.db_name}"
+        },
+        {
+          namespace = "aws:elasticbeanstalk:application:environment"
+          name      = "ENVIRONMENT"
+          value     = "production"
+        }
 
-  setting {
-    namespace = "aws:elasticbeanstalk:command"
-    name      = "DeploymentPolicy"
-    value     = "Rolling"
-  }
-
-  setting {
-    namespace = "aws:elasticbeanstalk:command"
-    name      = "BatchSizeType"
-    value     = "Percentage"
-  }
-
-  setting {
-    namespace = "aws:elasticbeanstalk:command"
-    name      = "BatchSize"
-    value     = "50"
-  }
-
-  setting {
-    namespace = "aws:elasticbeanstalk:command"
-    name      = "IgnoreHealthCheck"
-    value     = "false"
-  }
-
-  # Environment variables (including DB connection)
-  setting {
-    namespace = "aws:elasticbeanstalk:application:environment"
-    name      = "DATABASE_URL"
-    value     = "postgresql://${var.db_username}:${var.db_password}@${aws_db_instance.production_db.endpoint}/${var.db_name}"
-  }
-
-  # Add other environment variables as needed
-  setting {
-    namespace = "aws:elasticbeanstalk:application:environment"
-    name      = "ENVIRONMENT"
-    value     = "production"
-  }
-
-  tags = {
-    Environment = "production"
-  }
+      ]
+    }
+  ]
 }
