@@ -409,23 +409,23 @@ module "eb_app" {
   environments = [
     {
       name                = "${var.app_name}-prod"
-      solution_stack_name = "64bit Amazon Linux 2 v3.4.5 running Docker" # Update to your desired platform
+      solution_stack_name = "64bit Amazon Linux 2 v3.4.5 running Docker"
       settings = [
         {
           namespace = "aws:ec2:vpc"
           name      = "VPCId"
-          value     = aws_vpc.prod_vpc.id
+          value     = module.vpc.vpc.id
         },
 
         {
           namespace = "aws:ec2:vpc"
           name      = "Subnets"
-          value     = join(",", aws_subnet.public_subnets[*].id)
+          value     = join(",", module.public_subnets.subnets[*].id)
         },
         {
           namespace = "aws:ec2:vpc"
           name      = "ELBSubnets"
-          value     = join(",", aws_subnet.public_subnets[*].id)
+          value     = join(",", module.public_subnets.subnets[*].id)
         },
 
         {
@@ -496,7 +496,7 @@ module "eb_app" {
         {
           namespace = "aws:elasticbeanstalk:application:environment"
           name      = "DATABASE_URL"
-          value     = "postgresql://${var.db_username}:${var.db_password}@${aws_db_instance.production_db.endpoint}/${var.db_name}"
+          value     = "postgresql://${var.db_username}:${var.db_password}@${module.db.endpoint}/${var.db_name}"
         },
         {
           namespace = "aws:elasticbeanstalk:application:environment"
